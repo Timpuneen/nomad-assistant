@@ -1,0 +1,35 @@
+services:
+  backend:
+    build: ./backend
+    container_name: insurance-assistant-backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      - LAWS_DIR=/app/laws
+    volumes:
+      # ChromaDB data persists between restarts
+      - chroma_data:/app/chroma_db
+      # Put your .docx law files here — indexed automatically on startup
+      - ./laws:/app/laws
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  frontend:
+    build: ./frontend
+    container_name: insurance-assistant-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  chroma_data:
