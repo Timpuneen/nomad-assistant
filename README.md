@@ -331,3 +331,7 @@ insurance-assistant/
 | `TOP_K` | 5 | Кол-во фрагментов для контекста |
 
 Для повышения качества ответов можно увеличить `TOP_K` до 8 или сменить модель на `gpt-4o`.
+
+## DEMO xd
+
+[![Demo video](https://img.youtube.com/vi/PhuSzQbPPwU/maxresdefault.jpg)](https://youtu.be/PhuSzQbPPwU)
