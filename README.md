@@ -38,7 +38,7 @@ FastAPI               ← бэкенд
 
 ## Запуск через Docker (рекомендуется)
 
-Самый простой способ — одна команда поднимает всё.
+Самый простой способ — одна команда поднимает всё. Docker образ устанавливает зависимости автоматически.
 
 ### 1. Создать .env файл
 
@@ -48,7 +48,6 @@ cp .env.example .env
 # Открыть .env и вставить OpenAI API ключ:
 # OPENAI_API_KEY=sk-...
 ```
-
 
 ### 2. Положить законы в папку (опционально)
 
@@ -68,7 +67,7 @@ laws/
 docker compose restart backend
 ```
 
-### 2. Собрать и запустить
+### 3. Собрать и запустить
 
 ```bash
 # Из корня проекта (там где docker-compose.yml)
@@ -153,6 +152,36 @@ npm run dev
 
 Фронтенд будет доступен на http://localhost:5173
 
+### Быстрый старт (краткая версия)
+
+**С Docker:**
+```bash
+# 1. Настроить .env
+cd backend && cp .env.example .env
+# Добавить OPENAI_API_KEY в .env
+
+# 2. Запустить
+cd .. && docker compose up --build
+# Открыть http://localhost
+```
+
+**Без Docker:**
+```bash
+# 1. Бэкенд
+cd backend
+python -m venv venv
+source venv/bin/activate  # или venv\Scripts\activate на Windows
+pip install -r requirements.txt
+cp .env.example .env      # добавить OPENAI_API_KEY
+uvicorn main:app --reload --port 8000
+
+# 2. Фронтенд (в новом терминале)
+cd frontend
+npm install
+npm run dev
+# Открыть http://localhost:5173
+```
+
 ---
 
 ## Использование
@@ -233,8 +262,6 @@ insurance-assistant/
 1. Откройте нужный закон на сайте
 2. Сохраните/скопируйте текст в Word-документ
 3. Загрузите через интерфейс
-
----
 
 ## Параметры системы (backend/rag.py)
 
