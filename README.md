@@ -132,6 +132,12 @@ uv sync
 cp .env.example .env
 # Открыть .env и вставить ваш OpenAI API ключ:
 # OPENAI_API_KEY=sk-...
+# ChromaDB при локальном запуске поднимать отдельно не нужно:
+# backend сам создаст embedded-базу в ./chroma_db
+# При необходимости путь можно переопределить:
+# CHROMA_PATH=./chroma_db
+# Чтобы при старте подтянуть .docx из корневой папки laws:
+# LAWS_DIR=../laws
 
 # Запустить сервер
 uvicorn main:app --reload --port 8000
@@ -139,6 +145,46 @@ uvicorn main:app --reload --port 8000
 
 Бэкенд будет доступен на http://localhost:8000  
 Swagger документация: http://localhost:8000/docs
+
+#### ChromaDB без Docker
+
+В локальном режиме ChromaDB работает как embedded-база внутри Python-процесса FastAPI через `chromadb.PersistentClient`. Отдельный сервер ChromaDB запускать не нужно: при первом старте бэкенда папка `backend/chroma_db/` создастся автоматически и будет хранить индекс между перезапусками.
+
+Если нужно явно задать место хранения:
+
+```bash
+# macOS/Linux
+export CHROMA_PATH=./chroma_db
+
+# Windows PowerShell
+$env:CHROMA_PATH="./chroma_db"
+
+uvicorn main:app --reload --port 8000
+```
+
+Чтобы полностью сбросить локальную базу знаний, остановите бэкенд и удалите папку `backend/chroma_db/`. После этого документы нужно будет загрузить или переиндексировать заново.
+
+#### Автоиндексация `laws/` без Docker
+
+В Docker папка `laws/` монтируется автоматически. При ручном запуске бэкенда нужно явно указать путь к ней через `LAWS_DIR`, иначе backend будет искать законы по Docker-пути `/app/laws`.
+
+Запуск из папки `backend` с автоиндексацией файлов из корневой папки `laws/`:
+
+```bash
+# macOS/Linux
+export LAWS_DIR=../laws
+export CHROMA_PATH=./chroma_db
+uvicorn main:app --reload --port 8000
+```
+
+```powershell
+# Windows PowerShell
+$env:LAWS_DIR="../laws"
+$env:CHROMA_PATH="./chroma_db"
+uvicorn main:app --reload --port 8000
+```
+
+При старте backend запустит `startup_indexer.py`, найдёт `.docx` в `laws/`, проверит MD5 и проиндексирует только новые или изменённые файлы.
 
 ### 3. Фронтенд
 
@@ -176,6 +222,8 @@ source venv/bin/activate  # или venv\Scripts\activate на Windows
 pip install -r requirements.txt
 # или: uv sync
 cp .env.example .env      # добавить OPENAI_API_KEY
+# ChromaDB отдельной командой не запускается, данные будут в backend/chroma_db
+export LAWS_DIR=../laws   # Windows PowerShell: $env:LAWS_DIR="../laws"
 uvicorn main:app --reload --port 8000
 
 # 2. Фронтенд (в новом терминале)
