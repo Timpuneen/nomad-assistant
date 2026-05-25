@@ -125,6 +125,8 @@ source venv/bin/activate
 
 # Установить зависимости
 pip install -r requirements.txt
+# Или, если установлен uv:
+uv sync
 
 # Создать файл с переменными окружения
 cp .env.example .env
@@ -172,6 +174,7 @@ cd backend
 python -m venv venv
 source venv/bin/activate  # или venv\Scripts\activate на Windows
 pip install -r requirements.txt
+# или: uv sync
 cp .env.example .env      # добавить OPENAI_API_KEY
 uvicorn main:app --reload --port 8000
 
@@ -201,6 +204,7 @@ insurance-assistant/
 ├── backend/
 │   ├── main.py          # FastAPI приложение, эндпоинты
 │   ├── rag.py           # RAG-движок: индексация, поиск, генерация
+│   ├── pyproject.toml
 │   ├── requirements.txt
 │   ├── .env.example
 │   └── chroma_db/       # создаётся автоматически при первой загрузке
