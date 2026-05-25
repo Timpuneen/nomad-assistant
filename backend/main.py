@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from typing import Optional
 import uvicorn
 
-from rag import RAGEngine
+from rag import RAGEngine, SOURCE_LAW, SOURCE_UPLOAD
 from startup_indexer import run as run_startup_indexer
 
 rag = RAGEngine()
@@ -86,8 +86,15 @@ def chat(request: ChatRequest):
 async def upload_document(file: UploadFile = File(...)):
     if not file.filename.endswith(".docx"):
         raise HTTPException(status_code=400, detail="Only .docx files are supported")
+    if rag.has_source(file.filename, SOURCE_LAW):
+        raise HTTPException(
+            status_code=409,
+            detail="Этот файл уже есть в базе законов и не может быть загружен как пользовательский документ",
+        )
     contents = await file.read()
-    result   = rag.ingest_docx(contents, file.filename, source_type="upload")
+    result   = rag.ingest_docx(contents, file.filename, source_type=SOURCE_UPLOAD)
+    if result.get("status") == "error":
+        raise HTTPException(status_code=409, detail=result.get("message", "Upload conflict"))
     return result
 
 

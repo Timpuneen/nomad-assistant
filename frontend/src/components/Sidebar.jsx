@@ -45,8 +45,8 @@ export default function Sidebar({ onNewChat }) {
       await load()
       // Auto-hide success message after 3 seconds
       setTimeout(() => setUploadMsg(null), 3000)
-    } catch {
-      setUploadMsg({ ok: false, text: 'Ошибка загрузки' })
+    } catch (err) {
+      setUploadMsg({ ok: false, text: err.message || 'Ошибка загрузки' })
       // Auto-hide error message after 5 seconds
       setTimeout(() => setUploadMsg(null), 5000)
     } finally {

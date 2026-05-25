@@ -54,5 +54,7 @@ Thumbs.db
 *.temp
 .cache/
 
-# Law documents index state
+# Law documents and runtime state
+laws/*.docx
 laws/.index_state.json
+laws/.doc_state.json

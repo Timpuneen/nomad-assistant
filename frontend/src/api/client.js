@@ -22,7 +22,14 @@ export async function uploadDocument(file) {
   const form = new FormData()
   form.append('file', file)
   const res = await fetch(`${BASE}/uploads`, { method: 'POST', body: form })
-  if (!res.ok) throw new Error(`Upload failed: ${res.status}`)
+  if (!res.ok) {
+    let message = `Upload failed: ${res.status}`
+    try {
+      const body = await res.json()
+      if (body.detail) message = body.detail
+    } catch {}
+    throw new Error(message)
+  }
   return res.json()
 }
 

@@ -88,6 +88,13 @@ class RAGEngine:
 
     def ingest_docx(self, file_bytes: bytes, filename: str,
                     source_type: str = SOURCE_UPLOAD) -> dict:
+        if source_type == SOURCE_UPLOAD and self.has_source(filename, SOURCE_LAW):
+            return {
+                "status": "error",
+                "filename": filename,
+                "message": "This document is preloaded and cannot be uploaded as a user document",
+            }
+
         doc   = Document(io.BytesIO(file_bytes))
         text  = self._extract_structured_text(doc)
         chunks = self._smart_chunk(text, filename, source_type)
@@ -100,7 +107,10 @@ class RAGEngine:
         ids        = [c["id"]       for c in chunks]
         metadatas  = [c["metadata"] for c in chunks]
 
-        self._delete_by_source(filename)
+        if source_type == SOURCE_LAW:
+            self._delete_by_source(filename)
+        else:
+            self._delete_by_source(filename, source_type=source_type)
 
         self.collection.add(
             ids=ids,
@@ -267,11 +277,34 @@ class RAGEngine:
     #  DOCUMENT MANAGEMENT
     # ------------------------------------------------------------------ #
 
-    def _delete_by_source(self, filename: str):
+    def has_source(self, filename: str, source_type: str | None = None) -> bool:
         try:
-            res = self.collection.get(where={"source": filename})
-            if res["ids"]:
-                self.collection.delete(ids=res["ids"])
+            res = self.collection.get(where={"source": filename}, include=["metadatas"])
+            if source_type is None:
+                return bool(res["ids"])
+            return any(
+                m.get("source_type") == source_type
+                for m in res.get("metadatas", [])
+            )
+        except Exception:
+            return False
+
+    def _delete_by_source(self, filename: str, source_type: str | None = None):
+        try:
+            res = self.collection.get(where={"source": filename}, include=["metadatas"])
+            if not res["ids"]:
+                return
+
+            ids = res["ids"]
+            if source_type is not None:
+                ids = [
+                    doc_id
+                    for doc_id, metadata in zip(res["ids"], res.get("metadatas", []))
+                    if metadata.get("source_type") == source_type
+                ]
+
+            if ids:
+                self.collection.delete(ids=ids)
         except Exception:
             pass
 
@@ -279,7 +312,7 @@ class RAGEngine:
 
     def delete_upload(self, filename: str) -> dict:
         """Permanently delete an upload document from ChromaDB."""
-        self._delete_by_source(filename)
+        self._delete_by_source(filename, source_type=SOURCE_UPLOAD)
         return {"status": "ok", "deleted": filename}
 
     # --- laws (toggle enabled/disabled) ---

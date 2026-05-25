@@ -49,7 +49,7 @@ def run(rag):
         name         = path.name
         current_hash = _file_hash(path)
 
-        if state.get(name) == current_hash:
+        if state.get(name) == current_hash and rag.has_source(name, "law"):
             print(f"[startup] SKIP (unchanged): {name}")
             skipped += 1
             continue
