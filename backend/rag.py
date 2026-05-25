@@ -1,7 +1,8 @@
 import os
 import io
 import re
-from typing import Optional
+import json
+from pathlib import Path
 from collections import defaultdict
 
 import chromadb
@@ -13,14 +14,21 @@ from dotenv import load_dotenv
 load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-CHROMA_PATH = os.getenv("CHROMA_PATH", "./chroma_db")
+CHROMA_PATH    = os.getenv("CHROMA_PATH", "./chroma_db")
+LAWS_DIR       = Path(os.getenv("LAWS_DIR", "/app/laws"))
 
-EMBED_MODEL = "text-embedding-3-small"
-CHAT_MODEL = "gpt-4o-mini"
-COLLECTION_NAME = "insurance_laws"
-CHUNK_SIZE = 800       # chars per chunk
-CHUNK_OVERLAP = 150    # overlap between chunks
-TOP_K = 5              # how many chunks to retrieve
+# File that stores enabled/disabled state for law documents
+DOC_STATE_FILE = LAWS_DIR / ".doc_state.json"
+
+EMBED_MODEL      = "text-embedding-3-small"
+CHAT_MODEL       = "gpt-4o-mini"
+COLLECTION_NAME  = "insurance_laws"
+CHUNK_SIZE       = 800
+CHUNK_OVERLAP    = 150
+TOP_K            = 5
+
+SOURCE_LAW    = "law"    # pre-loaded from laws/ folder
+SOURCE_UPLOAD = "upload" # uploaded via UI
 
 SYSTEM_PROMPT = """Ты — юридический ИИ-ассистент страховой компании Казахстана.
 Ты консультируешь сотрудников по вопросам страхового законодательства Республики Казахстан.
@@ -40,6 +48,27 @@ SYSTEM_PROMPT = """Ты — юридический ИИ-ассистент ст�
 """
 
 
+# ------------------------------------------------------------------ #
+#  Doc-state helpers  (enabled/disabled stored in JSON, not ChromaDB)
+# ------------------------------------------------------------------ #
+
+def _load_doc_state() -> dict:
+    """Returns {filename: bool} — True means enabled."""
+    if DOC_STATE_FILE.exists():
+        try:
+            return json.loads(DOC_STATE_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_doc_state(state: dict):
+    DOC_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    DOC_STATE_FILE.write_text(
+        json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
 class RAGEngine:
     def __init__(self):
         self.client = OpenAI(api_key=OPENAI_API_KEY)
@@ -51,30 +80,26 @@ class RAGEngine:
             name=COLLECTION_NAME,
             metadata={"hnsw:space": "cosine"},
         )
-        # session memory: session_id -> list of {role, content}
         self.sessions: dict[str, list] = defaultdict(list)
 
     # ------------------------------------------------------------------ #
     #  INGESTION
     # ------------------------------------------------------------------ #
 
-    def ingest_docx(self, file_bytes: bytes, filename: str) -> dict:
-        """Parse a .docx file, chunk it, embed, and store in ChromaDB."""
-        doc = Document(io.BytesIO(file_bytes))
-        full_text = self._extract_structured_text(doc)
-        chunks = self._smart_chunk(full_text, filename)
+    def ingest_docx(self, file_bytes: bytes, filename: str,
+                    source_type: str = SOURCE_UPLOAD) -> dict:
+        doc   = Document(io.BytesIO(file_bytes))
+        text  = self._extract_structured_text(doc)
+        chunks = self._smart_chunk(text, filename, source_type)
 
         if not chunks:
             return {"status": "error", "message": "No text found in document"}
 
-        # Embed all chunks
-        texts = [c["text"] for c in chunks]
+        texts      = [c["text"]     for c in chunks]
         embeddings = self._embed_batch(texts)
+        ids        = [c["id"]       for c in chunks]
+        metadatas  = [c["metadata"] for c in chunks]
 
-        ids = [c["id"] for c in chunks]
-        metadatas = [c["metadata"] for c in chunks]
-
-        # Delete existing chunks for this file before re-indexing
         self._delete_by_source(filename)
 
         self.collection.add(
@@ -84,81 +109,62 @@ class RAGEngine:
             metadatas=metadatas,
         )
 
-        return {
-            "status": "ok",
-            "filename": filename,
-            "chunks_indexed": len(chunks),
-        }
+        # Law documents are enabled by default when first indexed
+        if source_type == SOURCE_LAW:
+            state = _load_doc_state()
+            if filename not in state:
+                state[filename] = True
+                _save_doc_state(state)
+
+        return {"status": "ok", "filename": filename, "chunks_indexed": len(chunks)}
 
     def _extract_structured_text(self, doc: Document) -> str:
-        """Extract text preserving paragraph structure."""
-        lines = []
-        for para in doc.paragraphs:
-            text = para.text.strip()
-            if text:
-                lines.append(text)
-        return "\n".join(lines)
+        return "\n".join(p.text.strip() for p in doc.paragraphs if p.text.strip())
 
-    def _smart_chunk(self, text: str, filename: str) -> list[dict]:
-        """
-        Split text into chunks by article boundaries first,
-        then by size if an article is too long.
-        Preserves article metadata for citation.
-        """
-        chunks = []
-        # Try to split on Статья / Article boundaries
-        article_pattern = re.compile(
-            r"(Статья\s+\d+[\.\-]?\d*\..*?)(?=Статья\s+\d+|$)",
-            re.DOTALL,
+    def _smart_chunk(self, text: str, filename: str,
+                     source_type: str = SOURCE_UPLOAD) -> list[dict]:
+        chunks  = []
+        pattern = re.compile(
+            r"(Статья\s+\d+[\.\-]?\d*\..*?)(?=Статья\s+\d+|$)", re.DOTALL
         )
-        articles = article_pattern.findall(text)
+        articles = pattern.findall(text)
 
         if articles:
             for art in articles:
                 art = art.strip()
                 if not art:
                     continue
-                # Extract article number for metadata
-                num_match = re.match(r"Статья\s+([\d\.\-]+)", art)
-                article_num = num_match.group(1) if num_match else "?"
-
-                # Sub-chunk if article text is too long
-                sub_chunks = self._split_by_size(art, CHUNK_SIZE, CHUNK_OVERLAP)
-                for i, sub in enumerate(sub_chunks):
-                    chunk_id = f"{filename}::art{article_num}::part{i}"
+                m          = re.match(r"Статья\s+([\d\.\-]+)", art)
+                article_num = m.group(1) if m else "?"
+                for i, sub in enumerate(self._split_by_size(art, CHUNK_SIZE, CHUNK_OVERLAP)):
                     chunks.append({
-                        "id": chunk_id,
+                        "id":   f"{filename}::art{article_num}::part{i}",
                         "text": sub,
                         "metadata": {
-                            "source": filename,
-                            "article": article_num,
-                            "part": i,
+                            "source":      filename,
+                            "source_type": source_type,
+                            "article":     article_num,
+                            "part":        i,
                         },
                     })
         else:
-            # Fallback: plain size-based chunking
-            sub_chunks = self._split_by_size(text, CHUNK_SIZE, CHUNK_OVERLAP)
-            for i, sub in enumerate(sub_chunks):
-                chunk_id = f"{filename}::chunk{i}"
+            for i, sub in enumerate(self._split_by_size(text, CHUNK_SIZE, CHUNK_OVERLAP)):
                 chunks.append({
-                    "id": chunk_id,
+                    "id":   f"{filename}::chunk{i}",
                     "text": sub,
                     "metadata": {
-                        "source": filename,
-                        "article": "—",
-                        "part": i,
+                        "source":      filename,
+                        "source_type": source_type,
+                        "article":     "—",
+                        "part":        i,
                     },
                 })
-
         return chunks
 
     def _split_by_size(self, text: str, size: int, overlap: int) -> list[str]:
-        """Split text into overlapping chunks of `size` chars."""
-        chunks = []
-        start = 0
+        chunks, start = [], 0
         while start < len(text):
-            end = start + size
-            chunks.append(text[start:end].strip())
+            chunks.append(text[start:start + size].strip())
             start += size - overlap
         return [c for c in chunks if c]
 
@@ -167,27 +173,34 @@ class RAGEngine:
     # ------------------------------------------------------------------ #
 
     def query(self, question: str, session_id: str = "default") -> dict:
-        """Retrieve relevant chunks and generate an answer."""
-        # 1. Embed the question
-        q_embedding = self._embed_single(question)
+        total = self.collection.count()
+        if total == 0:
+            return {
+                "answer": "База знаний пуста. Загрузите документы с законами.",
+                "sources": [],
+            }
 
-        # 2. Retrieve top-k chunks from ChromaDB
+        # Build list of disabled law sources to exclude from search
+        state    = _load_doc_state()
+        disabled = [name for name, enabled in state.items() if not enabled]
+
+        q_embedding = self._embed_single(question)
         results = self.collection.query(
             query_embeddings=[q_embedding],
-            n_results=min(TOP_K, self.collection.count() or 1),
+            n_results=min(TOP_K, total),
             include=["documents", "metadatas", "distances"],
         )
 
-        docs = results["documents"][0]
-        metas = results["metadatas"][0]
+        docs      = results["documents"][0]
+        metas     = results["metadatas"][0]
         distances = results["distances"][0]
 
-        # 3. Filter low-relevance chunks (cosine distance > 0.6 means low similarity)
+        # Filter: relevance threshold + skip disabled law documents
         threshold = 0.6
-        filtered = [
+        filtered  = [
             (d, m, dist)
             for d, m, dist in zip(docs, metas, distances)
-            if dist < threshold
+            if dist < threshold and m.get("source") not in disabled
         ]
 
         if not filtered:
@@ -195,52 +208,41 @@ class RAGEngine:
                 "answer": (
                     "В загруженных документах не найдено релевантной информации "
                     "по вашему вопросу. Пожалуйста, убедитесь, что соответствующие "
-                    "законы загружены в систему."
+                    "законы загружены и активны."
                 ),
                 "sources": [],
             }
 
         docs_f, metas_f, _ = zip(*filtered)
 
-        # 4. Build context string
-        context_parts = []
-        for doc, meta in zip(docs_f, metas_f):
-            source = meta.get("source", "—")
-            article = meta.get("article", "—")
-            context_parts.append(f"[Источник: {source}, Статья {article}]\n{doc}")
-        context = "\n\n---\n\n".join(context_parts)
+        context = "\n\n---\n\n".join(
+            f"[Источник: {m.get('source','—')}, Статья {m.get('article','—')}]\n{d}"
+            for d, m in zip(docs_f, metas_f)
+        )
 
-        # 5. Build conversation history (last 6 turns)
-        history = self.sessions[session_id][-6:]
+        history  = self.sessions[session_id][-6:]
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         messages.extend(history)
         messages.append({
-            "role": "user",
+            "role":    "user",
             "content": f"Контекст из законов:\n\n{context}\n\nВопрос: {question}",
         })
 
-        # 6. Call OpenAI
         response = self.client.chat.completions.create(
-            model=CHAT_MODEL,
-            messages=messages,
-            temperature=0.1,  # low temperature for legal accuracy
-            max_tokens=1500,
+            model=CHAT_MODEL, messages=messages, temperature=0.1, max_tokens=1500
         )
         answer = response.choices[0].message.content
 
-        # 7. Save to session history
-        self.sessions[session_id].append({"role": "user", "content": question})
+        self.sessions[session_id].append({"role": "user",      "content": question})
         self.sessions[session_id].append({"role": "assistant", "content": answer})
 
-        # 8. Deduplicate sources
-        seen = set()
-        sources = []
+        seen, sources = set(), []
         for meta in metas_f:
             key = (meta.get("source", ""), meta.get("article", ""))
             if key not in seen:
                 seen.add(key)
                 sources.append({
-                    "source": meta.get("source", "—"),
+                    "source":  meta.get("source",  "—"),
                     "article": meta.get("article", "—"),
                 })
 
@@ -251,43 +253,83 @@ class RAGEngine:
     # ------------------------------------------------------------------ #
 
     def _embed_single(self, text: str) -> list[float]:
-        resp = self.client.embeddings.create(model=EMBED_MODEL, input=[text])
-        return resp.data[0].embedding
+        return self.client.embeddings.create(
+            model=EMBED_MODEL, input=[text]
+        ).data[0].embedding
 
     def _embed_batch(self, texts: list[str]) -> list[list[float]]:
-        resp = self.client.embeddings.create(model=EMBED_MODEL, input=texts)
-        return [item.embedding for item in resp.data]
+        return [
+            item.embedding for item in
+            self.client.embeddings.create(model=EMBED_MODEL, input=texts).data
+        ]
 
     # ------------------------------------------------------------------ #
     #  DOCUMENT MANAGEMENT
     # ------------------------------------------------------------------ #
 
     def _delete_by_source(self, filename: str):
-        """Remove all chunks belonging to a given file."""
         try:
-            results = self.collection.get(where={"source": filename})
-            if results["ids"]:
-                self.collection.delete(ids=results["ids"])
+            res = self.collection.get(where={"source": filename})
+            if res["ids"]:
+                self.collection.delete(ids=res["ids"])
         except Exception:
             pass
 
-    def delete_document(self, filename: str) -> dict:
+    # --- uploads (full delete) ---
+
+    def delete_upload(self, filename: str) -> dict:
+        """Permanently delete an upload document from ChromaDB."""
         self._delete_by_source(filename)
         return {"status": "ok", "deleted": filename}
 
-    def list_documents(self) -> dict:
+    # --- laws (toggle enabled/disabled) ---
+
+    def toggle_law(self, filename: str, enabled: bool) -> dict:
+        """Enable or disable a law document in search (no ChromaDB change)."""
+        state          = _load_doc_state()
+        state[filename] = enabled
+        _save_doc_state(state)
+        return {"status": "ok", "filename": filename, "enabled": enabled}
+
+    # --- listing ---
+
+    def list_laws(self) -> list[dict]:
+        """All documents with source_type='law', with their enabled state."""
         try:
-            results = self.collection.get(include=["metadatas"])
-            sources = list({m["source"] for m in results["metadatas"]})
-            return {"documents": sorted(sources), "total": len(sources)}
+            res   = self.collection.get(include=["metadatas"])
+            state = _load_doc_state()
+            seen  = {}
+            for m in res["metadatas"]:
+                if m.get("source_type") == SOURCE_LAW:
+                    name = m["source"]
+                    if name not in seen:
+                        seen[name] = state.get(name, True)
+            return [
+                {"filename": name, "enabled": enabled}
+                for name, enabled in sorted(seen.items())
+            ]
         except Exception:
-            return {"documents": [], "total": 0}
+            return []
+
+    def list_uploads(self) -> list[str]:
+        """All documents with source_type='upload'."""
+        try:
+            res  = self.collection.get(include=["metadatas"])
+            seen = set()
+            for m in res["metadatas"]:
+                if m.get("source_type") == SOURCE_UPLOAD:
+                    seen.add(m["source"])
+            return sorted(seen)
+        except Exception:
+            return []
 
     def get_stats(self) -> dict:
-        count = self.collection.count()
-        docs = self.list_documents()
+        laws    = self.list_laws()
+        uploads = self.list_uploads()
         return {
-            "total_chunks": count,
-            "total_documents": docs["total"],
-            "documents": docs["documents"],
+            "total_chunks":    self.collection.count(),
+            "total_laws":      len(laws),
+            "total_uploads":   len(uploads),
+            "laws":            laws,
+            "uploads":         uploads,
         }

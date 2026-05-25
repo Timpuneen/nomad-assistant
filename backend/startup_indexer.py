@@ -1,55 +1,53 @@
 """
 Runs once at backend startup.
-Scans /app/laws/ for .docx files and indexes any that are
-new or have been modified since last index.
+Scans LAWS_DIR for .docx files and indexes new or changed ones.
+Tracks changes via MD5 hash stored in .index_state.json.
 """
 
-import os
 import json
 import hashlib
 from pathlib import Path
-from rag import RAGEngine
+import os
 
-LAWS_DIR = Path(os.getenv("LAWS_DIR", "/app/laws"))
-STATE_FILE = Path(os.getenv("LAWS_DIR", "/app/laws")) / ".index_state.json"
-
-
-def file_hash(path: Path) -> str:
-    """MD5 of file contents — used to detect changes."""
-    h = hashlib.md5()
-    h.update(path.read_bytes())
-    return h.hexdigest()
+LAWS_DIR   = Path(os.getenv("LAWS_DIR", "/app/laws"))
+STATE_FILE = LAWS_DIR / ".index_state.json"
 
 
-def load_state() -> dict:
+def _file_hash(path: Path) -> str:
+    return hashlib.md5(path.read_bytes()).hexdigest()
+
+
+def _load_state() -> dict:
     if STATE_FILE.exists():
         try:
-            return json.loads(STATE_FILE.read_text())
+            return json.loads(STATE_FILE.read_text(encoding="utf-8"))
         except Exception:
             return {}
     return {}
 
 
-def save_state(state: dict):
-    STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2))
+def _save_state(state: dict):
+    STATE_FILE.write_text(
+        json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
 
-def run(rag: RAGEngine):
+def run(rag):
     if not LAWS_DIR.exists():
         print(f"[startup] Laws directory not found: {LAWS_DIR} — skipping auto-index")
         return
 
     docx_files = sorted(LAWS_DIR.glob("*.docx"))
     if not docx_files:
-        print(f"[startup] No .docx files found in {LAWS_DIR}")
+        print(f"[startup] No .docx files in {LAWS_DIR}")
         return
 
-    state = load_state()
+    state = _load_state()
     indexed, skipped, failed = 0, 0, 0
 
     for path in docx_files:
-        name = path.name
-        current_hash = file_hash(path)
+        name         = path.name
+        current_hash = _file_hash(path)
 
         if state.get(name) == current_hash:
             print(f"[startup] SKIP (unchanged): {name}")
@@ -58,7 +56,8 @@ def run(rag: RAGEngine):
 
         print(f"[startup] Indexing: {name} ...", end=" ", flush=True)
         try:
-            result = rag.ingest_docx(path.read_bytes(), name)
+            # source_type="law" so these documents get toggle-only treatment in UI
+            result = rag.ingest_docx(path.read_bytes(), name, source_type="law")
             print(f"{result['chunks_indexed']} chunks")
             state[name] = current_hash
             indexed += 1
@@ -66,5 +65,5 @@ def run(rag: RAGEngine):
             print(f"ERROR: {e}")
             failed += 1
 
-    save_state(state)
+    _save_state(state)
     print(f"[startup] Done — indexed: {indexed}, skipped: {skipped}, failed: {failed}")

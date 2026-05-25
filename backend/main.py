@@ -8,14 +8,15 @@ import uvicorn
 from rag import RAGEngine
 from startup_indexer import run as run_startup_indexer
 
-
 rag = RAGEngine()
+indexing_complete = False
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Runs once on startup — index any .docx files in /app/laws/
+    global indexing_complete
     run_startup_indexer(rag)
+    indexing_complete = True
     yield
 
 
@@ -41,34 +42,36 @@ class ChatResponse(BaseModel):
     session_id: str
 
 
+class ToggleRequest(BaseModel):
+    enabled: bool
+
+
+# ── Health ────────────────────────────────────────────────────────────────────
+
 @app.get("/")
 def root():
-    return {"status": "ok", "message": "Insurance Law Assistant API"}
+    return {"status": "ok"}
+
+
+@app.get("/health/ready")
+def readiness():
+    """Returns 200 only after startup indexing completes"""
+    if not indexing_complete:
+        raise HTTPException(status_code=503, detail="Indexing in progress")
+    return {"status": "ready"}
 
 
 @app.get("/api/stats")
 def get_stats():
-    """Return number of indexed documents and chunks."""
     return rag.get_stats()
 
 
-@app.post("/api/upload")
-async def upload_document(file: UploadFile = File(...)):
-    """Upload and index a .docx file."""
-    if not file.filename.endswith(".docx"):
-        raise HTTPException(status_code=400, detail="Only .docx files are supported")
-
-    contents = await file.read()
-    result = rag.ingest_docx(contents, file.filename)
-    return result
-
+# ── Chat ──────────────────────────────────────────────────────────────────────
 
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(request: ChatRequest):
-    """Ask a question about insurance law."""
     if not request.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty")
-
     result = rag.query(request.question, request.session_id)
     return ChatResponse(
         answer=result["answer"],
@@ -77,18 +80,34 @@ def chat(request: ChatRequest):
     )
 
 
-@app.delete("/api/documents/{doc_name}")
-def delete_document(doc_name: str):
-    """Remove a document from the index."""
-    result = rag.delete_document(doc_name)
+# ── Uploads (can be fully deleted) ───────────────────────────────────────────
+
+@app.post("/api/uploads")
+async def upload_document(file: UploadFile = File(...)):
+    if not file.filename.endswith(".docx"):
+        raise HTTPException(status_code=400, detail="Only .docx files are supported")
+    contents = await file.read()
+    result   = rag.ingest_docx(contents, file.filename, source_type="upload")
     return result
 
 
-@app.get("/api/documents")
-def list_documents():
-    """List all indexed documents."""
-    return rag.list_documents()
+@app.get("/api/uploads")
+def list_uploads():
+    return {"uploads": rag.list_uploads()}
 
 
-if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+@app.delete("/api/uploads/{filename}")
+def delete_upload(filename: str):
+    return rag.delete_upload(filename)
+
+
+# ── Laws (toggle only) ────────────────────────────────────────────────────────
+
+@app.get("/api/laws")
+def list_laws():
+    return {"laws": rag.list_laws()}
+
+
+@app.patch("/api/laws/{filename}/toggle")
+def toggle_law(filename: str, body: ToggleRequest):
+    return rag.toggle_law(filename, body.enabled)
