@@ -177,10 +177,15 @@ export CHROMA_PATH=./chroma_db
 uvicorn main:app --reload --port 8000
 ```
 
-```powershell
+```wind
 # Windows PowerShell
 $env:LAWS_DIR="../laws"
 $env:CHROMA_PATH="./chroma_db"
+uvicorn main:app --reload --port 8000
+
+# cmd
+set LAWS_DIR=../laws
+set CHROMA_PATH=./chroma_db
 uvicorn main:app --reload --port 8000
 ```
 
