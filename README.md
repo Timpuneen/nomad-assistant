@@ -334,4 +334,4 @@ insurance-assistant/
 
 ## DEMO xd
 
-[![Demo video](https://img.youtube.com/vi/PhuSzQbPPwU/maxresdefault.jpg)](https://youtu.be/PhuSzQbPPwU)
+[![Watch demo](https://img.youtube.com/vi/PhuSzQbPPwU/hqdefault.jpg)](https://youtu.be/PhuSzQbPPwU)
